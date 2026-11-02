@@ -79,7 +79,8 @@ def home():
     return "Bot is running 24/7 successfully with Database!"
 
 def run_flask():
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 threading.Thread(target=run_flask).start()
 
@@ -105,21 +106,21 @@ async def show_user_balance(message: types.Message):
     pending_review = "0.00"
     
     balance_text = (
-        f"💵আপনার ব্যালেন্স\n"
+        f"💵 আপনার ব্যালেন্স\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💵ব্যালেন্স: {balance:.2f} BDT\n"
-        f"💸পেন্ডিং (উইথড্র): {pending_withdraw:.2f} BDT\n"
-        f" 💰Total Income: {total_income:.2f} BDT\n"
+        f"💵 ব্যালেন্স: {balance:.2f} BDT\n"
+        f"💸 পেন্ডিং (উইথড্র): {pending_withdraw:.2f} BDT\n"
+        f"💰 Total Income: {total_income:.2f} BDT\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅সম্পন্ন কাজ: {completed_tasks:02d}টি\n"
-        f"⏳রিভিউতে আছে: {pending_review} টি"
+        f"✅ সম্পন্ন কাজ: {completed_tasks:02d}টি\n"
+        f"⏳ রিভিউতে আছে: {pending_review} টি"
     )
     
     await message.reply(balance_text)
 
 
 # ---------------------------------------------------------
-# ২. ফেসবুক টাস্ক সিস্টেম (UID ও Cookies জমা দেওয়া)
+# ২. ফেসবুক টাস্ক সিস্টেম
 # ---------------------------------------------------------
 @dp.callback_query_handler(text="submit_fb_uid")
 async def request_fb_uid(call: types.CallbackQuery):
@@ -192,7 +193,7 @@ async def admin_reject_fb(call: types.CallbackQuery):
 
 
 # ---------------------------------------------------------
-# ৩. উইথড্র (Withdrawal) সিস্টেম (USDT, বিকাশ, নগদ)
+# ৩. উইথড্র (Withdrawal) সিস্টেম
 # ---------------------------------------------------------
 @dp.message_handler(text="টাকা উত্তোলন")
 async def withdraw_menu(message: types.Message):
@@ -207,7 +208,7 @@ async def withdraw_menu(message: types.Message):
 
 @dp.callback_query_handler(text="withdraw_usdt")
 async def withdraw_usdt_start(call: types.CallbackQuery, state: FSMContext):
-    await state.update_data(method="USDT (BEP-20)", min_limit=0.25)
+    await state.update_data(method="USDT", min_limit=0.25)
     await call.message.answer("🪙 আপনার **Binance PayID / USDT (BEP-20) Address** টি দিন:")
     await WithdrawFlow.waiting_for_address_or_number.set()
     await call.answer()
@@ -247,22 +248,23 @@ async def process_withdraw_amount(message: types.Message, state: FSMContext):
     user_balance, _, _ = get_user(user_id)
 
     if amount < min_limit or user_balance < amount:
-        if method == "USDT (BEP-20)":
+        if method == "USDT":
             await message.reply(
                 f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। মিনিমাম উইথড্র {min_limit} USDT。\n"
                 f"আপনার ব্যালেন্স: {user_balance} usdt"
             )
         else:
             await message.reply(
-                f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। {method}-এ উইথড্র দিতে কমপক্ষে {min_limit:.2f} ৳ প্রয়োজন।\n"
+                f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। {method}-এ উইথড্র দিতে কমপক্ষে {min_limit:.2f} ৳ প্রয়োজন。\n"
                 f"আপনার বর্তমান ব্যালেন্স: {user_balance} ৳"
             )
         await state.finish()
         return
 
+    # Callback data-তে স্পেস এড়াতে method-এর নাম সংক্ষিপ্ত রাখা হয়েছে
     admin_kb = InlineKeyboardMarkup(row_width=2)
-    btn_approve = InlineKeyboardButton("✅ Pay Done", callback_data=f"w_approve_{user_id}_{amount}_{method}")
-    btn_reject = InlineKeyboardButton("❌ Reject", callback_data=f"w_reject_{user_id}_{amount}_{min_limit}_{method}")
+    btn_approve = InlineKeyboardButton("✅ Pay Done", callback_data=f"w_app_{user_id}_{amount}_{method}")
+    btn_reject = InlineKeyboardButton("❌ Reject", callback_data=f"w_rej_{user_id}_{min_limit}_{method}")
     admin_kb.add(btn_approve, btn_reject)
 
     await bot.send_message(
@@ -277,14 +279,14 @@ async def process_withdraw_amount(message: types.Message, state: FSMContext):
         reply_markup=admin_kb
     )
 
-    if method == "USDT (BEP-20)":
+    if method == "USDT":
         await message.reply("✅ আপনার উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে।")
     else:
         await message.reply("✅ আপনার টাকা 1 থেকে 2 ঘন্টার ভিতরে এড হয়ে জাবে।")
         
     await state.finish()
 
-@dp.callback_query_handler(text_startswith="w_approve_")
+@dp.callback_query_handler(text_startswith="w_app_")
 async def admin_withdraw_approve(call: types.CallbackQuery):
     parts = call.data.split("_")
     user_id = int(parts[2])
@@ -299,27 +301,22 @@ async def admin_withdraw_approve(call: types.CallbackQuery):
     await call.message.edit_text(call.message.text + "\n\n✅ **পেমেন্ট সফলভাবে সম্পন্ন হয়েছে।**")
     await call.answer()
 
-@dp.callback_query_handler(text_startswith="w_reject_")
+@dp.callback_query_handler(text_startswith="w_rej_")
 async def admin_withdraw_reject(call: types.CallbackQuery):
     parts = call.data.split("_")
     user_id = int(parts[2])
-    amount = parts[3]
-    min_limit = parts[4]
-    method = parts[5]
+    min_limit = parts[3]
+    method = parts[4]
     
-    user_id_int = int(user_id)
-    user_balance, _, _ = get_user(user_id_int)
+    user_balance, _, _ = get_user(user_id)
 
     if "USDT" in method:
-        await bot.send_message(
-            user_id_int, 
-            f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। মিনিমাম উইথড্র {min_limit} USDT。\nআপনার ব্যালেন্স: {user_balance} usdt"
-        )
+        await bot.send_message(user_id, f"❌ উইথড্র বাতিল হয়েছে। মিনিমাম উইথড্র {min_limit} USDT。\nআপনার ব্যালেন্স: {user_balance} USDT")
     else:
+        await bot.save_to_memory if hasattr(bot, 'save_to_memory') else None
         await bot.send_message(
-            user_id_int,
-            f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। {method}-এ উইথড্র দিতে কমপক্ষে {min_limit} ৳ প্রয়োজন।\n"
-            f"আপনার বর্তমান ব্যালেন্স: {user_balance} ৳"
+            user_id,
+            f"❌ আপনার {method} উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে। পর্যাপ্ত ব্যালেন্স বা সঠিক তথ্য না থাকায় এটি রিজেক্ট করা হয়।"
         )
 
     await call.message.edit_text(call.message.text + "\n\n❌ **উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে।**")
