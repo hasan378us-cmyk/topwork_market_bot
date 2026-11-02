@@ -93,6 +93,22 @@ class WithdrawFlow(StatesGroup):
     waiting_for_amount = State()
 
 # ---------------------------------------------------------
+# ০. স্টার্ট কমান্ড হ্যান্ডলার
+# ---------------------------------------------------------
+@dp.message_handler(commands=['start'])
+async def send_welcome(message: types.Message):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    keyboard.add(
+        types.KeyboardButton("💰 ব্যালেন্স"),
+        types.KeyboardButton("টাকা উত্তোলন")
+    )
+    await message.reply(
+        "স্বাগতম! আমাদের টাস্ক মার্কেটে আপনাকে স্বাগতম। নিচে থেকে আপনার প্রয়োজনীয় অপশন সিলেক্ট করুন:",
+        reply_markup=keyboard
+    )
+
+
+# ---------------------------------------------------------
 # ১. ব্যালেন্স ড্যাশবোর্ড সিস্টেম
 # ---------------------------------------------------------
 @dp.message_handler(text="💰 ব্যালেন্স")
