@@ -322,6 +322,16 @@ async def admin_withdraw_reject(call: types.CallbackQuery):
     await call.message.edit_text(call.message.text + "\n\n❌ **উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে।**")
     await call.answer()
 
-
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
+if __name__ == '__main__':
+  # ফ্লাস্ক সার্ভার আলাদা থ্রেডে চালু করা হচ্ছে
+  flask_thread = threading.Thread(target=run_flask)
+  flask_thread.daemon = True
+  flask_thread.start()
+
+  # aiogram পোলিং শুরু করার আগে একটি ছোট প্রিন্ট বা লগ রাখতে পারেন
+  logging.info("Starting bot polling...")
+
+  # মূল থ্রেডে aiogram পোলিং চালানো হচ্ছে
+  executor.start_polling(dp, skip_updates=True)
