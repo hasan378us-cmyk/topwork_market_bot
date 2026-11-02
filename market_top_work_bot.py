@@ -82,8 +82,6 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-threading.Thread(target=run_flask).start()
-
 
 # --- স্টেট (FSM) ক্লাসসমূহ ---
 class FacebookTaskState(StatesGroup):
@@ -261,7 +259,6 @@ async def process_withdraw_amount(message: types.Message, state: FSMContext):
         await state.finish()
         return
 
-    # Callback data-তে স্পেস এড়াতে method-এর নাম সংক্ষিপ্ত রাখা হয়েছে
     admin_kb = InlineKeyboardMarkup(row_width=2)
     btn_approve = InlineKeyboardButton("✅ Pay Done", callback_data=f"w_app_{user_id}_{amount}_{method}")
     btn_reject = InlineKeyboardButton("❌ Reject", callback_data=f"w_rej_{user_id}_{min_limit}_{method}")
@@ -313,7 +310,6 @@ async def admin_withdraw_reject(call: types.CallbackQuery):
     if "USDT" in method:
         await bot.send_message(user_id, f"❌ উইথড্র বাতিল হয়েছে। মিনিমাম উইথড্র {min_limit} USDT。\nআপনার ব্যালেন্স: {user_balance} USDT")
     else:
-        await bot.save_to_memory if hasattr(bot, 'save_to_memory') else None
         await bot.send_message(
             user_id,
             f"❌ আপনার {method} উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে। পর্যাপ্ত ব্যালেন্স বা সঠিক তথ্য না থাকায় এটি রিজেক্ট করা হয়।"
@@ -322,16 +318,16 @@ async def admin_withdraw_reject(call: types.CallbackQuery):
     await call.message.edit_text(call.message.text + "\n\n❌ **উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে।**")
     await call.answer()
 
+# ---------------------------------------------------------
+# মূল এন্ট্রি পয়েন্ট (ফ্লাস্ক থ্রেড + এআইওগ্রাম পোলিং)
+# ---------------------------------------------------------
 if __name__ == '__main__':
+    # ফ্লাস্ক সার্ভার ব্যাকগ্রাউন্ড থ্রেডে চালু করা হচ্ছে
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    logging.info("Starting bot polling and Flask server...")
+
+    # aiogram পোলিং শুরু করা হচ্ছে
     executor.start_polling(dp, skip_updates=True)
-if __name__ == '__main__':
-  # ফ্লাস্ক সার্ভার আলাদা থ্রেডে চালু করা হচ্ছে
-  flask_thread = threading.Thread(target=run_flask)
-  flask_thread.daemon = True
-  flask_thread.start()
-
-  # aiogram পোলিং শুরু করার আগে একটি ছোট প্রিন্ট বা লগ রাখতে পারেন
-  logging.info("Starting bot polling...")
-
-  # মূল থ্রেডে aiogram পোলিং চালানো হচ্ছে
-  executor.start_polling(dp, skip_updates=True)
