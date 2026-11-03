@@ -13,17 +13,15 @@ from telegram.ext import (
 ADMIN_ID = 8510313155  # আপনার টেলিগ্রাম অ্যাডমিন আইডি
 
 # কনভারসেশন স্টেপস
-WAITING_FOR_2FA = 1
-WAITING_FOR_FB_COOKIES = 2
+WAITING_FOR_UID = 1
+WAITING_FOR_COOKIES = 2
 WAITING_FOR_BKASH_NAGAD_NUMBER = 10
-WAITING_FOR_USDT_LINK = 11
 WAITING_FOR_WITHDRAW_AMOUNT = 12
 
 # --- ডাটাবেস সেটআপ ---
 def init_db():
     conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
-    # ইউজার টেবিল (ব্যালেন্স, মোট আয়, সম্পন্ন কাজ, রিভিউ কাজ, রেফার কাউন্ট, রেফার আয়)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -86,10 +84,14 @@ def add_user_balance(user_id, amount):
 # --- মূল মেনু ---
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
+    # মূল মেনুর বাটনগুলো লম্বা স্টাইলে সাজানো
     keyboard = [
-        ["📋 কাজ ▶", "💰 ব্যালেন্স"],
-        ["💵 টাকা উত্তোলন", "🎁 My Referrals"],
-        ["👨‍💻 সাপোর্ট", "👶 আমি নতুন"]
+        ["📋 কাজ ▶"],
+        ["💰 ব্যালেন্স"],
+        ["💵 টাকা উত্তোলন"],
+        ["🎁 My Referrals"],
+        ["👨‍💻 সাপোর্ট"],
+        ["👶 আমি নতুন"]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     welcome_message = f"🤖 স্বাগতম, MD: {user_name}!\n☑️ কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন 🔻"
@@ -99,8 +101,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_with_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    
-    # ইউজার ডাটাবেসে আছে কিনা চেক এবং ক্রিয়েট
     user_data = get_user(user_id)
     
     args = context.args
@@ -159,11 +159,12 @@ async def handle_referral_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     await update.message.reply_text(ref_msg, parse_mode="Markdown")
 
-# --- কাজের ক্যাটাগরি মেনু ---
+# --- কাজের ক্যাটাগরি মেনু (লম্বা স্টাইল) ---
 async def handle_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task_keyboard = [
         ["📷 ইনস্টাগ্রাম কাজ >"],
-        ["📧 Gmail কাজ", "🪙 Coin Work"],
+        ["📧 Gmail কাজ"],
+        ["🪙 Coin Work"],
         ["f Facebook কাজ"],
         ["❌ বাতিল"]
     ]
@@ -171,55 +172,72 @@ async def handle_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🟣 সিলেক্ট করুন:", reply_markup=reply_markup)
 
 async def handle_facebook_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    facebook_keyboard = [["✉️ Anymail/Number"], ["❌ বাতিল"]]
+    facebook_keyboard = [
+        ["✉️ Anymail/Number"],
+        ["❌ বাতিল"]
+    ]
     reply_markup = ReplyKeyboardMarkup(facebook_keyboard, resize_keyboard=True)
     await update.message.reply_text("🟣 সিলেক্ট করুন:", reply_markup=reply_markup)
 
 async def handle_anymail_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    anymail_keyboard = [["f 0 fnd cookies | 4.00 ৳"], ["🔙 ফিরে যান"]]
+    anymail_keyboard = [
+        ["f 0 fnd cookies | 4.00 ৳"],
+        ["🔙 ফিরে যান"]
+    ]
     reply_markup = ReplyKeyboardMarkup(anymail_keyboard, resize_keyboard=True)
     await update.message.reply_text("🟣 সিলেক্ট করুন:", reply_markup=reply_markup)
 
 async def handle_specific_facebook_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "🟢 First name: Heitor\n"
-        "🟢 Last name: Silva\n"
-        "🔒 Password: kamrol@03\n\n"
-        "f উপরের তথ্য দিয়ে অ্যাকাউন্ট খুলে নিচে UID দিন বাটনেন চাপ দিন 🤣"
+        "🟢 First name: `Laura`\n"
+        "🟢 Last name: `Silva`\n"
+        "🔒 Password: `kamrol@04`\n\n"
+        "f উপরের তথ্য দিয়ে অ্যাকাউন্ট খুলে নিচে **Send UID** বাটনে চাপ দিন 🤣"
     )
-    fb_action_keyboard = [["✔ UID দিন"], ["👶 কিভাবে কাজ করব", "❌ বাতিল"]]
+    fb_action_keyboard = [
+        ["Send UID"],
+        ["👶 কিভাবে কাজ করব"],
+        ["❌ বাতিল"]
+    ]
     reply_markup = ReplyKeyboardMarkup(fb_action_keyboard, resize_keyboard=True)
-    await update.message.reply_text(msg, reply_markup=reply_markup)
+    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
 
-# --- ফেসবুক কুকিজ সাবমিশন ---
-async def ask_for_fb_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- মাল্টি-স্টেপ ফেসবুক টাস্ক কনভারসেশন (UID -> Cookies) ---
+async def ask_for_uid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cancel_keyboard = [["❌ বাতিল"]]
     reply_markup = ReplyKeyboardMarkup(cancel_keyboard, resize_keyboard=True)
-    await update.message.reply_text("☑️ আপনার ফেসবুক অ্যাকাউন্টের কুকিজ (Cookies) অথবা UID-টি দিন:", reply_markup=reply_markup)
-    return WAITING_FOR_FB_COOKIES
+    await update.message.reply_text("☑️ আপনার ফেসবুক অ্যাকাউন্টের ১৪ থেকে ১৬ সংখ্যার UID-টি দিন:", reply_markup=reply_markup)
+    return WAITING_FOR_UID
 
-async def receive_fb_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def receive_uid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['temp_uid'] = update.message.text
+    cancel_keyboard = [["❌ বাতিল"]]
+    reply_markup = ReplyKeyboardMarkup(cancel_keyboard, resize_keyboard=True)
+    await update.message.reply_text("এবার আপনার Cookies টি দিন:", reply_markup=reply_markup)
+    return WAITING_FOR_COOKIES
+
+async def receive_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_cookies = update.message.text
+    user_uid = context.user_data.get('temp_uid', '')
     user = update.effective_user
     
-    # ইউজারের রিভিউ কাউন্ট আপডেট
     user_data = get_user(user.id)
     update_user_field(user.id, "review_tasks", user_data["review_tasks"] + 1)
 
     user_success_msg = (
         "✅ সফল ভাবে আপনার ফেসবুক কাজটি জমা হয়েছে\n"
-        "এই কাজের টাকা 3 থেকে 72 ঘন্টার ভিতরে আপনার একাউন্টে জমা হয়ে যাবে, ধন্যবাদ!"
+        "এই কাজের রিপোর্ট খুব তাড়াতাড়ি আসবে, তাই সবাই আর দেরি না করে আরও বেশি করে কাজ করুন।"
     )
     await update.message.reply_text(user_success_msg)
     await show_main_menu(update, context)
 
     admin_msg = (
         "New Facebook Task Submitted!\n\n"
-        f"User ID: {user.id}\n"
-        f"First Name: {user.first_name}\n"
-        f"Password: kamrol@03\n"
-        f"Cookies / UID: {user_cookies}\n"
-        f"Rate: ৳4.00\n\n"
+        f"👤 User ID: {user.id}\n"
+        f"📝 Name: {user.first_name}\n"
+        f"🆔 UID: {user_uid}\n"
+        f"🍪 Cookies: {user_cookies}\n"
+        f"💵 Rate: ৳4.00\n\n"
         "Status: ⏳ Under Review"
     )
     admin_keyboard = [[InlineKeyboardButton("Reject ❌", callback_data="fb_reject"), InlineKeyboardButton("Approve ✅", callback_data="fb_approve")]]
@@ -234,7 +252,7 @@ async def receive_fb_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     return ConversationHandler.END
 
-# --- টাকা উত্তোলন মেনু ---
+# --- টাকা উত্তোলন মেনু (লম্বা স্টাইল) ---
 async def handle_withdraw_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     withdraw_keyboard = [
         ["💠 USDT (BEP-20) -> সর্বনিম্ন: 0.25(-0.05)"],
@@ -260,7 +278,7 @@ async def ask_for_withdraw_account(update: Update, context: ContextTypes.DEFAULT
     user_id = update.effective_user.id
     current_bal = get_user(user_id)["balance"]
     
-    if current_bal < 0.25:  # সর্বনিম্ন লিমিট চেক
+    if current_bal < 0.25:
         await update.message.reply_text(f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! বর্তমান ব্যালেন্স: ৳{current_bal:.2f}")
         return ConversationHandler.END
 
@@ -295,7 +313,6 @@ async def finalize_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ পর্যাপ্ত ব্যালেন্স নেই! বর্তমান ব্যালেন্স: ৳{user_data['balance']:.2f}")
         return ConversationHandler.END
 
-    # ব্যালেন্স কমানো ও পেন্ডিং বাড়ানো
     new_bal = user_data["balance"] - amount
     new_pend = user_data["pending_withdraw"] + amount
     conn = sqlite3.connect("bot_database.db")
@@ -351,7 +368,6 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
             method = parts[4] if len(parts) > 4 else "মাধ্যম"
             await query.edit_message_text(text=f"{base_text}\n\nStatus: SUCCESS ✅")
             
-            # পেন্ডিং ব্যালেন্স কমানো
             new_pend = max(0.0, user_data["pending_withdraw"] - amount)
             update_user_field(user_id, "pending_withdraw", new_pend)
             
@@ -363,7 +379,6 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
         elif action == "no":
             await query.edit_message_text(text=f"{base_text}\n\nStatus: FAILED ❌")
             
-            # টাকা ফেরত দেওয়া
             new_bal = user_data["balance"] + amount
             new_pend = max(0.0, user_data["pending_withdraw"] - amount)
             conn = sqlite3.connect("bot_database.db")
@@ -393,7 +408,6 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
                 update_user_field(target_user_id, "completed_tasks", user_data["completed_tasks"] + 1)
                 update_user_field(target_user_id, "review_tasks", max(0, user_data["review_tasks"] - 1))
                 
-                # রেফারেল কমিশন (১৫%)
                 if user_data["referred_by"]:
                     ref_id = user_data["referred_by"]
                     commission = reward * 0.15
@@ -427,17 +441,18 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def main():
-    init_db()  # ডাটাবেস ইনিশিয়ালাইজেশন
+    init_db()
     app = ApplicationBuilder().token("9126121221:AAEn9n9KO1ZY05RfynRvadEJkyBROCaZiIU").build()
 
-    # ফেসবুক কুকিজ কনভারসেশন
     fb_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Text("✔ UID দিন"), ask_for_fb_cookies)],
-        states={WAITING_FOR_FB_COOKIES: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_fb_cookies)]},
+        entry_points=[MessageHandler(filters.Text("Send UID"), ask_for_uid)],
+        states={
+            WAITING_FOR_UID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_uid)],
+            WAITING_FOR_COOKIES: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies)]
+        },
         fallbacks=[MessageHandler(filters.Text("❌ বাতিল"), handle_cancel)]
     )
 
-    # উইথড্র কনভারসেশন
     withdraw_conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Text("💠 USDT (BEP-20) -> সর্বনিম্ন: 0.25(-0.05)"), ask_for_withdraw_account),
