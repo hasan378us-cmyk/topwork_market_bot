@@ -84,7 +84,6 @@ def add_user_balance(user_id, amount):
 # --- মূল মেনু ---
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name
-    # মূল মেনুর বাটনগুলো লম্বা স্টাইলে সাজানো
     keyboard = [
         ["📋 কাজ ▶"],
         ["💰 ব্যালেন্স"],
@@ -159,7 +158,7 @@ async def handle_referral_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     await update.message.reply_text(ref_msg, parse_mode="Markdown")
 
-# --- কাজের ক্যাটাগরি মেনু (লম্বা স্টাইল) ---
+# --- কাজের ক্যাটাগরি মেনু ---
 async def handle_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task_keyboard = [
         ["📷 ইনস্টাগ্রাম কাজ >"],
@@ -200,7 +199,10 @@ async def handle_specific_facebook_details(update: Update, context: ContextTypes
         ["❌ বাতিল"]
     ]
     reply_markup = ReplyKeyboardMarkup(fb_action_keyboard, resize_keyboard=True)
-    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+    
+    # ইউজার যেন কাজ সিলেক্ট করার সাথে সাথে চ্যাট থেকে ডিটেইলস মেসেজটি ডিলিট করতে পারে বা ট্র্যাক রাখতে পারে
+    sent_msg = await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+    context.user_data['last_task_msg_id'] = sent_msg.message_id
 
 # --- মাল্টি-স্টেপ ফেসবুক টাস্ক কনভারসেশন (UID -> Cookies) ---
 async def ask_for_uid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,6 +225,14 @@ async def receive_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_data = get_user(user.id)
     update_user_field(user.id, "review_tasks", user_data["review_tasks"] + 1)
+
+    # ইউজার কাজ জমা দেওয়ার সাথে সাথে চ্যাট থেকে কাজের ডিটেইলস মেসেজটি রিমুভ করার চেষ্টা
+    last_msg_id = context.user_data.get('last_task_msg_id')
+    if last_msg_id:
+        try:
+            await context.bot.delete_message(chat_id=user.id, message_id=last_msg_id)
+        except:
+            pass
 
     user_success_msg = (
         "✅ সফল ভাবে আপনার ফেসবুক কাজটি জমা হয়েছে\n"
@@ -252,7 +262,7 @@ async def receive_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
-# --- টাকা উত্তোলন মেনু (লম্বা স্টাইল) ---
+# --- টাকা উত্তোলন মেনু ---
 async def handle_withdraw_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     withdraw_keyboard = [
         ["💠 USDT (BEP-20) -> সর্বনিম্ন: 0.25(-0.05)"],
@@ -436,7 +446,7 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
                 del pending_tasks[message_id]
 
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ অপারেশন বাতিল করা হয়েছে।")
+    await update.message.reply_text("❌ অপারেশন বাতিল করা হয়েছে።")
     await show_main_menu(update, context)
     return ConversationHandler.END
 
@@ -444,6 +454,7 @@ def main():
     init_db()
     app = ApplicationBuilder().token("9126121221:AAEn9n9KO1ZY05RfynRvadEJkyBROCaZiIU").build()
 
+    # এখানে "Send UID" দিয়ে এন্ট্রি পয়েন্ট সেট করা হয়েছে যাতে কুকিজ সঠিকভাবে চায়
     fb_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Text("Send UID"), ask_for_uid)],
         states={
