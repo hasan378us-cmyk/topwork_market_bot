@@ -10,7 +10,7 @@ from telegram.ext import (
     filters
 )
 
-ADMIN_ID = 123456789  # আপনার টেলিগ্রাম অ্যাডমিন আইডি এখানে বসাবেন
+ADMIN_ID = 8510313155  # আপনার টেলিগ্রাম অ্যাডমিন আইডি
 
 # কনভারসেশন স্টেপস
 WAITING_FOR_2FA = 1
@@ -428,7 +428,7 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     init_db()  # ডাটাবেস ইনিশিয়ালাইজেশন
-    app = ApplicationBuilder().token("YOUR_BOT_TOKEN_HERE").build()
+    app = ApplicationBuilder().token("9126121221:AAEn9n9KO1ZY05RfynRvadEJkyBROCaZiIU").build()
 
     # ফেসবুক কুকিজ কনভারসেশন
     fb_conv = ConversationHandler(
