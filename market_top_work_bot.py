@@ -200,7 +200,6 @@ async def handle_specific_facebook_details(update: Update, context: ContextTypes
     ]
     reply_markup = ReplyKeyboardMarkup(fb_action_keyboard, resize_keyboard=True)
     
-    # ইউজার যেন কাজ সিলেক্ট করার সাথে সাথে চ্যাট থেকে ডিটেইলস মেসেজটি ডিলিট করতে পারে বা ট্র্যাক রাখতে পারে
     sent_msg = await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
     context.user_data['last_task_msg_id'] = sent_msg.message_id
 
@@ -226,7 +225,7 @@ async def receive_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = get_user(user.id)
     update_user_field(user.id, "review_tasks", user_data["review_tasks"] + 1)
 
-    # ইউজার কাজ জমা দেওয়ার সাথে সাথে চ্যাট থেকে কাজের ডিটেইলস মেসেজটি রিমুভ করার চেষ্টা
+    # ইউজার কাজ জমা দেওয়ার সাথে সাথে চ্যাট থেকে কাজের ডিটেইলস মেসেজটি রিমুভ করা
     last_msg_id = context.user_data.get('last_task_msg_id')
     if last_msg_id:
         try:
@@ -234,8 +233,8 @@ async def receive_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
+    # আপনার চাহিদা অনুযায়ী সঠিক সফল মেসেজটি এখানে সেট করা হলো
     user_success_msg = (
-        "✅ সফল ভাবে আপনার ফেসবুক কাজটি জমা হয়েছে\n"
         "এই কাজের রিপোর্ট খুব তাড়াতাড়ি আসবে, তাই সবাই আর দেরি না করে আরও বেশি করে কাজ করুন।"
     )
     await update.message.reply_text(user_success_msg)
@@ -446,7 +445,7 @@ async def admin_decision_callback(update: Update, context: ContextTypes.DEFAULT_
                 del pending_tasks[message_id]
 
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ অপারেশন বাতিল করা হয়েছে።")
+    await update.message.reply_text("❌ অপারেশন বাতিল করা হয়েছে।")
     await show_main_menu(update, context)
     return ConversationHandler.END
 
@@ -454,7 +453,6 @@ def main():
     init_db()
     app = ApplicationBuilder().token("9126121221:AAEn9n9KO1ZY05RfynRvadEJkyBROCaZiIU").build()
 
-    # এখানে "Send UID" দিয়ে এন্ট্রি পয়েন্ট সেট করা হয়েছে যাতে কুকিজ সঠিকভাবে চায়
     fb_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Text("Send UID"), ask_for_uid)],
         states={
