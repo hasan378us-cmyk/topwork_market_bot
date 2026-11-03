@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher, executor, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
 # রেন্ডারের এনভায়রনমেন্ট ভ্যারিয়েবল থেকে টোকেন এবং অ্যাডমিন আইডি রিড করবে
 API_TOKEN = os.getenv("BOT_TOKEN")
@@ -93,23 +93,56 @@ class WithdrawFlow(StatesGroup):
     waiting_for_amount = State()
 
 # ---------------------------------------------------------
-# ০. স্টার্ট কমান্ড হ্যান্ডলার
+# ০. মূল মেনু কিবোর্ড তৈরির ফাংশন
+# ---------------------------------------------------------
+def get_main_keyboard():
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    keyboard.add(
+        KeyboardButton("📋 কাজ ▶"),
+        KeyboardButton("💰 ব্যালেন্স"),
+        KeyboardButton("💵 টাকা উত্তোলন"),
+        KeyboardButton("🎁 My Referrals"),
+        KeyboardButton("☎️ সাপোর্ট"),
+        KeyboardButton("👶 আমি নতুন")
+    )
+    return keyboard
+
+# ---------------------------------------------------------
+# ১. স্টার্ট কমান্ড হ্যান্ডলার
 # ---------------------------------------------------------
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message):
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    keyboard.add(
-        types.KeyboardButton("💰 ব্যালেন্স"),
-        types.KeyboardButton("টাকা উত্তোলন")
+    user_name = message.from_user.first_name
+    welcome_text = (
+        f"🤖 স্বাগত, {user_name}!\n"
+        f"✅ কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন 👇"
     )
-    await message.reply(
-        "স্বাগতম! আমাদের টাস্ক মার্কেটে আপনাকে স্বাগতম। নিচে থেকে আপনার প্রয়োজনীয় অপশন সিলেক্ট করুন:",
-        reply_markup=keyboard
-    )
+    await message.reply(welcome_text, reply_markup=get_main_keyboard())
 
 
 # ---------------------------------------------------------
-# ১. ব্যালেন্স ড্যাশবোর্ড সিস্টেম
+# ২. কাজ মেনু সিস্টেম (ইনলাইন বাটন)
+# ---------------------------------------------------------
+@dp.message_handler(text="📋 কাজ ▶")
+async def show_tasks_menu(message: types.Message):
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("📸 ইনস্টাগ্রাম কাজ >", callback_data="task_instagram"),
+        InlineKeyboardButton("📧 Gmail কাজ", callback_data="task_gmail"),
+        InlineKeyboardButton("🪙 Coin Work", callback_data="task_coin"),
+        InlineKeyboardButton("📘 Facebook কাজ", callback_data="submit_fb_uid"),
+        InlineKeyboardButton("❌ বাতিল", callback_data="task_cancel")
+    )
+    await message.reply("🟣 সিলেক্ট করুন:", reply_markup=markup)
+
+@dp.callback_query_handler(text="task_cancel")
+async def cancel_callback(call: types.CallbackQuery):
+    await call.message.edit_text("❌ বাতিল করা হয়েছে।")
+    await call.answer()
+
+
+# ---------------------------------------------------------
+# ৩. ব্যালেন্স ড্যাশবোর্ড সিস্টেম
 # ---------------------------------------------------------
 @dp.message_handler(text="💰 ব্যালেন্স")
 async def show_user_balance(message: types.Message):
@@ -130,11 +163,11 @@ async def show_user_balance(message: types.Message):
         f"⏳ রিভিউতে আছে: {pending_review} টি"
     )
     
-    await message.reply(balance_text)
+    await message.reply(balance_text, reply_markup=get_main_keyboard())
 
 
 # ---------------------------------------------------------
-# ২. ফেসবুক টাস্ক সিস্টেম
+# ৪. ফেসবুক টাস্ক সিস্টেম
 # ---------------------------------------------------------
 @dp.callback_query_handler(text="submit_fb_uid")
 async def request_fb_uid(call: types.CallbackQuery):
@@ -207,18 +240,24 @@ async def admin_reject_fb(call: types.CallbackQuery):
 
 
 # ---------------------------------------------------------
-# ৩. উইথড্র (Withdrawal) সিস্টেম
+# ৫. উইথড্র (Withdrawal) সিস্টেম (আপনার স্ক্রিনশট অনুযায়ী আপডেটকৃত বাটন)
 # ---------------------------------------------------------
-@dp.message_handler(text="টাকা উত্তোলন")
+@dp.message_handler(text="💵 টাকা উত্তোলন")
 async def withdraw_menu(message: types.Message):
     keyboard = InlineKeyboardMarkup(row_width=1)
     btn_usdt = InlineKeyboardButton("🪙 USDT (BEP-20) -> সর্বনিম্ন: 0.25 (-0.05)", callback_data="withdraw_usdt")
-    btn_bkash = InlineKeyboardButton("💳 বিকাশ -> সর্বনিম্ন: ১১০৳ (-১০)", callback_data="withdraw_bkash")
-    btn_nagad = InlineKeyboardButton("🟠 নগদ -> সর্বনিম্ন: ১০০৳ (-১০)", callback_data="withdraw_nagad")
-    btn_back = InlineKeyboardButton("⬅️ ফিরে যান", callback_data="back_to_main_menu")
+    btn_mobile = InlineKeyboardButton("📱 মোবাইল রিচার্জ -> সর্বনিম্ন: ২৫৳(-৫)", callback_data="withdraw_mobile")
+    btn_bkash = InlineKeyboardButton("💳 বিকাশ -> সর্বনিম্ন: ১১০৳(-১০)", callback_data="withdraw_bkash")
+    btn_nagad = InlineKeyboardButton("🟠 নগদ -> সর্বনিম্ন: ১০০৳(-১০)", callback_data="withdraw_nagad")
+    btn_back = InlineKeyboardButton("◀️ ফিরে যান", callback_data="back_to_main_menu")
     
-    keyboard.add(btn_usdt, btn_bkash, btn_nagad, btn_back)
-    await message.reply("💵 **টাকা তোলার মাধ্যম সিলেক্ট করুন:**", reply_markup=keyboard, parse_mode="Markdown")
+    keyboard.add(btn_usdt, btn_mobile, btn_bkash, btn_nagad, btn_back)
+    await message.reply("💵 **টাকা তোলার মাধ্যম সিলেক্ট করুন:**[span_3](start_span)[span_3](end_span)", reply_markup=keyboard, parse_mode="Markdown")
+
+@dp.callback_query_handler(text="back_to_main_menu")
+async def back_to_main(call: types.CallbackQuery):
+    await call.message.edit_text("🏠 মূল মেনুতে ফিরে এসেছেন।")
+    await call.answer()
 
 @dp.callback_query_handler(text="withdraw_usdt")
 async def withdraw_usdt_start(call: types.CallbackQuery, state: FSMContext):
@@ -227,13 +266,20 @@ async def withdraw_usdt_start(call: types.CallbackQuery, state: FSMContext):
     await WithdrawFlow.waiting_for_address_or_number.set()
     await call.answer()
 
-@dp.callback_query_handler(text=["withdraw_bkash", "withdraw_nagad"])
+@dp.callback_query_handler(text=["withdraw_mobile", "withdraw_bkash", "withdraw_nagad"])
 async def withdraw_mfs_start(call: types.CallbackQuery, state: FSMContext):
-    method = "Bkash" if call.data == "withdraw_bkash" else "Nagad"
-    min_limit = 110.0 if method == "Bkash" else 100.0
+    if call.data == "withdraw_mobile":
+        method = "Mobile Recharge"
+        min_limit = 25.0
+    elif call.data == "withdraw_bkash":
+        method = "Bkash"
+        min_limit = 110.0
+    else:
+        method = "Nagad"
+        min_limit = 100.0
     
     await state.update_data(method=method, min_limit=min_limit)
-    await call.message.answer(f"📱 আপনার **{method} Personal** নাম্বারটি দিন:")
+    await call.message.answer(f"📱 আপনার **{method}** নাম্বারটি দিন:")
     await WithdrawFlow.waiting_for_address_or_number.set()
     await call.answer()
 
@@ -269,7 +315,7 @@ async def process_withdraw_amount(message: types.Message, state: FSMContext):
             )
         else:
             await message.reply(
-                f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। {method}-এ উইথড্র দিতে কমপক্ষে {min_limit:.2f} ৳ প্রয়োজন。\n"
+                f"❌ আপনার ব্যালেন্স পর্যাপ্ত নয়। {method}-এ উইথড্র দিতে কমপক্ষে {min_limit:.2f} ৳ প্রয়োজন।\n"
                 f"আপনার বর্তমান ব্যালেন্স: {user_balance} ৳"
             )
         await state.finish()
@@ -333,6 +379,20 @@ async def admin_withdraw_reject(call: types.CallbackQuery):
 
     await call.message.edit_text(call.message.text + "\n\n❌ **উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে।**")
     await call.answer()
+
+
+# ---------------------------------------------------------
+# অন্যান্য মেনু বা বাটন হ্যান্ডলার (Placeholder)
+# ---------------------------------------------------------
+@dp.message_handler(text=["🎁 My Referrals", "☎️ সাপোর্ট", "👶 আমি নতুন"])
+async def other_menu_handlers(message: types.Message):
+    if message.text == "🎁 My Referrals":
+        await message.reply("🎁 আপনার রেফারেল লিংক থেকে বন্ধুরা জয়েন করলে বোনাস পাবেন!")
+    elif message.text == "☎️ সাপোর্ট":
+        await message.reply("☎️ কোনো সমস্যায় অ্যাডমিনের সাথে যোগাযোগ করুন।")
+    elif message.text == "👶 আমি নতুন":
+        await message.reply("👶 কীভাবে কাজ করবেন তার নির্দেশিকা এখানে দেওয়া হলো...")
+
 
 # ---------------------------------------------------------
 # মূল এন্ট্রি পয়েন্ট (ফ্লাস্ক থ্রেড + এআইওগ্রাম পোলিং)
